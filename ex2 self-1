@@ -1,0 +1,91 @@
+#include <stdio.h>
+#include <string.h>
+
+void modulo2_div(char *dividend, const char *divisor, char *remainder) {
+    int div_len = strlen(divisor);
+    int dividend_len = strlen(dividend);
+    
+    char temp[256];
+    strcpy(temp, dividend);
+
+    for (int i = 0; i <= dividend_len - div_len; i++) {
+        if (temp[i] == '1') {
+            for (int j = 0; j < div_len; j++) {
+                temp[i + j] = (temp[i + j] == divisor[j]) ? '0' : '1';
+            }
+        }
+    }
+
+    strncpy(remainder, &temp[dividend_len - div_len + 1], div_len - 1);
+    remainder[div_len - 1] = '\0';
+}
+
+int check_for_error(const char *remainder) {
+    for (int i = 0; remainder[i] != '\0'; i++) {
+        if (remainder[i] == '1') {
+            return 1; 
+        }
+    }
+    return 0; 
+}
+
+void receiver_check(const char *received_codeword, const char *divisor, const char *scenario_name) {
+    char remainder[128];
+    printf("\n--- Receiver Channel: %s ---\n", scenario_name);
+    printf("Received Stream : %s\n", received_codeword);
+    
+    modulo2_div((char *)received_codeword, divisor, remainder);
+    printf("CRC Remainder   : %s\n", remainder);
+    
+    if (check_for_error(remainder)) {
+        printf("Status          : ERROR DETECTED! (Data Corrupted)\n");
+    } else {
+        printf("Status          : NO ERROR DETECTED (Data Intact)\n");
+    }
+}
+
+int main() {
+    char data[128], generator[128];
+    char padded_data[256], remainder[128], codeword[256];
+    
+    printf("Enter Sender's Binary Data: ");
+    scanf("%127s", data);
+    printf("Enter Generator Polynomial : ");
+    scanf("%127s", generator);
+    
+    int data_len = strlen(data);
+    int gen_len = strlen(generator);
+
+    strcpy(padded_data, data);
+    for (int i = 0; i < gen_len - 1; i++) {
+        strcat(padded_data, "0");
+    }
+
+    modulo2_div(padded_data, generator, remainder);
+    
+    strcpy(codeword, data);
+    strcat(codeword, remainder);
+
+    printf("\n=== Sender Side Processing ===\n");
+    printf("Padded Data     : %s\n", padded_data);
+    printf("CRC Remainder   : %s\n", remainder);
+    printf("Final Codeword  : %s\n", codeword);
+
+    receiver_check(codeword, generator, "Perfect Transmission");
+
+    char single_error_stream[256];
+    strcpy(single_error_stream, codeword);
+    single_error_stream[0] = (single_error_stream[0] == '0') ? '1' : '0'; 
+    receiver_check(single_error_stream, generator, "Single-Bit Error Simulation");
+
+    char multi_error_stream[256];
+    strcpy(multi_error_stream, codeword);
+    if (strlen(multi_error_stream) > 2) {
+        multi_error_stream[0] = (multi_error_stream[0] == '0') ? '1' : '0';
+        multi_error_stream[1] = (multi_error_stream[1] == '0') ? '1' : '0';
+    }
+    receiver_check(multi_error_stream, generator, "Multi-Bit Error Simulation");
+
+    return 0;
+}
+
