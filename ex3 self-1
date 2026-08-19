@@ -1,0 +1,90 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+
+void calculate_parity(int *code) {
+    code[1] = code[3] ^ code[5] ^ code[7];
+    code[2] = code[3] ^ code[6] ^ code[7];
+    code[4] = code[5] ^ code[6] ^ code[7];
+}
+
+int calculate_syndrome(int *code) {
+    int s1 = code[1] ^ code[3] ^ code[5] ^ code[7];
+    int s2 = code[2] ^ code[3] ^ code[6] ^ code[7];
+    int s4 = code[4] ^ code[5] ^ code[6] ^ code[7];
+    return (s4 * 4) + (s2 * 2) + s1;
+}
+
+int main() {
+    char input[5];
+    int code[8] = {0};
+    int received[8] = {0};
+    
+    srand(time(NULL));
+
+    printf("Enter 4-bit binary message (e.g., 1011): ");
+    if (scanf("%4s", input) != 1 || strlen(input) != 4) {
+        printf("Error: Input must be exactly 4 bits.\n");
+        return 1;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (input[i] != '0' && input[i] != '1') {
+            printf("Error: Input must contain only 0 or 1.\n");
+            return 1;
+        }
+    }
+
+    code[3] = input[0] - '0';
+    code[5] = input[1] - '0';
+    code[6] = input[2] - '0';
+    code[7] = input[3] - '0';
+
+    calculate_parity(code);
+
+    printf("\n=== SENDER SIDE ===\n");
+    printf("Original Data Bits : d1=%d, d2=%d, d3=%d, d4=%d\n", code[3], code[5], code[6], code[7]);
+    printf("Generated Parity   : p1=%d, p2=%d, p4=%d\n", code[1], code[2], code[4]);
+    printf("Generated Codeword : ");
+    for (int i = 1; i <= 7; i++) printf("%d", code[i]);
+    printf("\n");
+
+    for (int i = 1; i <= 7; i++) {
+        received[i] = code[i];
+    }
+
+    int error_pos = (rand() % 7) + 1;
+    received[error_pos] ^= 1;
+
+    printf("\n=== TRANSMISSION CHANNEL ===\n");
+    printf("Simulated Error    : Flipped bit at position %d\n", error_pos);
+    printf("Received Codeword  : ");
+    for (int i = 1; i <= 7; i++) printf("%d", received[i]);
+    printf("\n");
+
+    printf("\n=== RECEIVER SIDE ===\n");
+    int p1_check = received[1] ^ received[3] ^ received[5] ^ received[7];
+    int p2_check = received[2] ^ received[3] ^ received[6] ^ received[7];
+    int p4_check = received[4] ^ received[5] ^ received[6] ^ received[7];
+    
+    printf("Parity Checks      : c1=%d, c2=%d, c4=%d\n", p1_check, p2_check, p4_check);
+
+    int syndrome = calculate_syndrome(received);
+    printf("Syndrome Value     : %d\n", syndrome);
+    printf("Detected Error Pos : Position %d\n", syndrome);
+
+    if (syndrome != 0) {
+        received[syndrome] ^= 1;
+        printf("Corrected Codeword : ");
+        for (int i = 1; i <= 7; i++) printf("%d", received[i]);
+        printf("\n");
+    } else {
+        printf("No error detected.\n");
+    }
+
+    printf("Recovered Data     : %d%d%d%d\n", received[3], received[5], received[6], received[7]);
+
+    return 0;
+}
+
