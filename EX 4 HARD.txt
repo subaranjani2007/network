@@ -1,0 +1,94 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define MAX_STOPS 1000005
+
+typedef struct Node {
+    int bus_index;
+    struct Node* next;
+} Node;
+
+void insert(Node** head, int bus_index) {
+    Node* newNode = (Node*)malloc(sizeof(Node));
+    newNode->bus_index = bus_index;
+    newNode->next = *head;
+    *head = newNode;
+}
+
+int numBusesToDestination(int** routes, int routesSize, int* routesColSize, int source, int target) {
+    if (source == target) return 0;
+
+    Node** stop_to_buses = (Node**)calloc(MAX_STOPS, sizeof(Node*));
+    for (int i = 0; i < routesSize; i++) {
+        for (int j = 0; j < routesColSize[i]; j++) {
+            insert(&stop_to_buses[routes[i][j]], i);
+        }
+    }
+
+    int* queue = (int*)malloc(routesSize * sizeof(int));
+    int front = 0, rear = 0;
+
+    bool* visited_buses = (bool*)calloc(routesSize, sizeof(bool));
+    bool* visited_stops = (bool*)calloc(MAX_STOPS, sizeof(bool));
+    int* bus_cost = (int*)malloc(routesSize * sizeof(int));
+
+    Node* curr = stop_to_buses[source];
+    visited_stops[source] = true;
+    while (curr != NULL) {
+        int bus = curr->bus_index;
+        if (!visited_buses[bus]) {
+            visited_buses[bus] = true;
+            bus_cost[bus] = 1;
+            queue[rear++] = bus;
+        }
+        curr = curr->next;
+    }
+
+    int result = -1;
+
+    while (front < rear) {
+        int bus = queue[front++];
+        int cost = bus_cost[bus];
+
+        for (int i = 0; i < routesColSize[bus]; i++) {
+            int stop = routes[bus][i];
+            
+            if (stop == target) {
+                result = cost;
+                goto cleanup;
+            }
+
+            if (!visited_stops[stop]) {
+                visited_stops[stop] = true;
+                Node* next_bus_node = stop_to_buses[stop];
+                while (next_bus_node != NULL) {
+                    int next_bus = next_bus_node->bus_index;
+                    if (!visited_buses[next_bus]) {
+                        visited_buses[next_bus] = true;
+                        bus_cost[next_bus] = cost + 1;
+                        queue[rear++] = next_bus;
+                    }
+                    next_bus_node = next_bus_node->next;
+                }
+            }
+        }
+    }
+
+cleanup:
+    for (int i = 0; i < MAX_STOPS; i++) {
+        Node* c = stop_to_buses[i];
+        while (c != NULL) {
+            Node* tmp = c;
+            c = c->next;
+            free(tmp);
+        }
+    }
+    free(stop_to_buses);
+    free(queue);
+    free(visited_buses);
+    free(visited_stops);
+    free(bus_cost);
+
+    return result;
+}
