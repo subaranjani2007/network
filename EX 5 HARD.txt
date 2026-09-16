@@ -1,0 +1,35 @@
+#include <stdlib.h>
+
+int* maxSlidingWindow(int* nums, int numsSize, int k, int* returnSize) {
+    if (numsSize == 0 || k == 0) {
+        *returnSize = 0;
+        return NULL;
+    }
+
+    *returnSize = numsSize - k + 1;
+    int* result = (int*)malloc((*returnSize) * sizeof(int));
+    int* deque = (int*)malloc(numsSize * sizeof(int));
+    
+    int front = 0;
+    int rear = 0;
+    int resultIdx = 0;
+
+    for (int i = 0; i < numsSize; i++) {
+        if (front < rear && deque[front] < i - k + 1) {
+            front++;
+        }
+
+        while (front < rear && nums[deque[rear - 1]] <= nums[i]) {
+            rear--;
+        }
+
+        deque[rear++] = i;
+
+        if (i >= k - 1) {
+            result[resultIdx++] = nums[deque[front]];
+        }
+    }
+
+    free(deque);
+    return result;
+}
