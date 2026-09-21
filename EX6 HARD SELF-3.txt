@@ -1,0 +1,113 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <sys/sysinfo.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+void log_activity(const char *msg) {
+    FILE *log_file = fopen("server.log", "a");
+    if (!log_file) return;
+    time_t now = time(NULL);
+    char *dt = ctime(&now);
+    dt[strlen(dt) - 1] = '\0';
+    fprintf(log_file, "[%s] %s\n", dt, msg);
+    fclose(log_file);
+}
+
+int main() {
+    int server_fd, client_fd;
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+    char buffer[1024];
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(8082);
+
+    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+    listen(server_fd, 3);
+
+    client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
+
+    printf("Client connected from IP: %s, Port: %d\n", inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+    log_activity("Client connected");
+
+    memset(buffer, 0, 1024);
+    read(client_fd, buffer, 1024);
+    
+    char user[50], pass[50];
+    sscanf(buffer, "%s %s", user, pass);
+
+    if (strcmp(user, "admin") == 0 && strcmp(pass, "1234") == 0) {
+        send(client_fd, "SUCCESS\n", 8, 0);
+        log_activity("Login successful");
+    } else {
+        send(client_fd, "FAIL\n", 5, 0);
+        log_activity("Login failed");
+        close(client_fd);
+        close(server_fd);
+        return 0;
+    }
+
+    while (1) {
+        memset(buffer, 0, 1024);
+        int valread = read(client_fd, buffer, 1024);
+        if (valread <= 0 || strcmp(buffer, "5") == 0) {
+            log_activity("Session terminated");
+            break;
+        }
+
+        if (strcmp(buffer, "3") == 0) {
+            time_t now = time(NULL);
+            char *dt = ctime(&now);
+            send(client_fd, dt, strlen(dt), 0);
+            log_activity("Requested date and time");
+        } 
+        else if (strcmp(buffer, "4") == 0) {
+            struct sysinfo info;
+            sysinfo(&info);
+            char sys_msg[256];
+            snprintf(sys_msg, sizeof(sys_msg), "Uptime: %ld seconds, Total RAM: %lu MB\n", info.uptime, info.totalram / (1024 * 1024));
+            send(client_fd, sys_msg, strlen(sys_msg), 0);
+            log_activity("Requested system info");
+        } 
+        else if (strncmp(buffer, "1 ", 2) == 0) {
+            char filename[100];
+            sscanf(buffer + 2, "%s", filename);
+            FILE *fp = fopen(filename, "w");
+            memset(buffer, 0, 1024);
+            read(client_fd, buffer, 1024);
+            fprintf(fp, "%s", buffer);
+            fclose(fp);
+            send(client_fd, "Upload Complete\n", 16, 0);
+            log_activity("Uploaded a file");
+        } 
+        else if (strncmp(buffer, "2 ", 2) == 0) {
+            char filename[100];
+            sscanf(buffer + 2, "%s", filename);
+            FILE *fp = fopen(filename, "r");
+            if (fp) {
+                memset(buffer, 0, 1024);
+                fread(buffer, 1, 1024, fp);
+                fclose(fp);
+                send(client_fd, buffer, strlen(buffer), 0);
+            } else {
+                send(client_fd, "File not found\n", 15, 0);
+            }
+            log_activity("Downloaded a file");
+        } 
+        else {
+            send(client_fd, "Invalid Choice\n", 15, 0);
+            log_activity("Invalid request handled");
+        }
+    }
+
+    close(client_fd);
+    close(server_fd);
+    return 0;
+}
