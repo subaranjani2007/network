@@ -1,0 +1,23 @@
+import random
+
+window_size = int(input("Enter window size: "))
+total_frames = int(input("Enter total frames: "))
+
+sent = 0
+total_transmissions = 0
+
+while sent < total_frames:
+    current_window = min(window_size, total_frames - sent)
+    frames_in_window = list(range(sent + 1, sent + current_window + 1))
+    
+    print(f"\nSending window frames: {frames_in_window}")
+    total_transmissions += current_window
+
+    if random.random() > 0.3:
+        print(f"ACK received for Frame {sent + 1}")
+        sent += 1
+    else:
+        print(f"CORRUPTED! Frame {sent + 1} lost. Retransmitting window...")
+
+print(f"\nAll {total_frames} frames delivered successfully!")
+print(f"Total transmissions made: {total_transmissions}")
