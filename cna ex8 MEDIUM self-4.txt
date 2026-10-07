@@ -1,0 +1,217 @@
+server.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8080
+#define MAX 1024
+
+struct Book {
+    int id;
+    char title[50];
+    char author[50];
+    char category[30];
+    int available;
+};
+
+struct Book catalog[3] = {
+    {1, "C Programming", "Dennis Ritchie", "Computer Science", 1},
+    {2, "Data Structures", "Mark Weiss", "Computer Science", 1},
+    {3, "Operating Systems", "Galvin", "Computer Science", 0}
+};
+
+int main() {
+    int server_fd, client_fd;
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+    char buffer[MAX];
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+    listen(server_fd, 5);
+
+    while (1) {
+        client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
+        
+        while (1) {
+            memset(buffer, 0, MAX);
+            int valread = read(client_fd, buffer, MAX);
+            if (valread <= 0) break;
+
+            char response[MAX] = "";
+            int choice = buffer[0] - '0';
+
+            if (choice == 1) {
+                char query[50];
+                strcpy(query, buffer + 2);
+                int found = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (strcasecmp(catalog[i].title, query) == 0 || strcasecmp(catalog[i].author, query) == 0) {
+                        char temp[200];
+                        sprintf(temp, "ID: %d | Title: %s | Author: %s | Category: %s | Status: %s\n",
+                                catalog[i].id, catalog[i].title, catalog[i].author, catalog[i].category,
+                                catalog[i].available ? "Available" : "Issued");
+                        strcat(response, temp);
+                        found = 1;
+                    }
+                }
+                if (!found) strcpy(response, "No matching book found.\n");
+            } 
+            else if (choice == 2) {
+                int id = atoi(buffer + 2);
+                int found = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (catalog[i].id == id) {
+                        sprintf(response, "Book ID %d (%s) is %s\n", id, catalog[i].title,
+                                catalog[i].available ? "Available" : "Not Available");
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) strcpy(response, "Invalid Book ID.\n");
+            } 
+            else if (choice == 3) {
+                int id = atoi(buffer + 2);
+                int found = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (catalog[i].id == id) {
+                        if (catalog[i].available) {
+                            catalog[i].available = 0;
+                            sprintf(response, "Book ID %d issued successfully.\n", id);
+                        } else {
+                            sprintf(response, "Book ID %d is already issued.\n", id);
+                        }
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) strcpy(response, "Invalid Book ID.\n");
+            } 
+            else if (choice == 4) {
+                int id = atoi(buffer + 2);
+                int found = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (catalog[i].id == id) {
+                        catalog[i].available = 1;
+                        sprintf(response, "Book ID %d returned successfully.\n", id);
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) strcpy(response, "Invalid Book ID.\n");
+            } 
+            else if (choice == 5) {
+                strcpy(response, "--- Issued Books Details ---\n");
+                int found = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (!catalog[i].available) {
+                        char temp[200];
+                        sprintf(temp, "ID: %d | Title: %s | Author: %s\n", catalog[i].id, catalog[i].title, catalog[i].author);
+                        strcat(response, temp);
+                        found = 1;
+                    }
+                }
+                if (!found) strcat(response, "No books are currently issued.\n");
+            } 
+            else if (choice == 6) {
+                strcpy(response, "DISCONNECT");
+                write(client_fd, response, strlen(response));
+                break;
+            }
+
+            write(client_fd, response, strlen(response));
+        }
+
+        close(client_fd);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+client.c
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8080
+#define MAX 1024
+
+int main() {
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    char buffer[MAX];
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+
+    connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+
+    while (1) {
+        printf("\n1. Search Book\n2. Check Availability\n3. Issue Book\n4. Return Book\n5. View Issued Books\n6. Exit\nEnter choice: ");
+        int choice;
+        scanf("%d", &choice);
+        getchar();
+
+        char req[MAX];
+        if (choice == 1) {
+            char query[50];
+            printf("Enter title or author: ");
+            fgets(query, 50, stdin);
+            query[strcspn(query, "\n")] = 0;
+            sprintf(req, "1 %s", query);
+        } else if (choice == 2) {
+            int id;
+            printf("Enter Book ID: ");
+            scanf("%d", &id);
+            sprintf(req, "2 %d", id);
+        } else if (choice == 3) {
+            int id;
+            printf("Enter Book ID to issue: ");
+            scanf("%d", &id);
+            sprintf(req, "3 %d", id);
+        } else if (choice == 4) {
+            int id;
+            printf("Enter Book ID to return: ");
+            scanf("%d", &id);
+            sprintf(req, "4 %d", id);
+        } else if (choice == 5) {
+            sprintf(req, "5");
+        } else if (choice == 6) {
+            sprintf(req, "6");
+            write(sock, req, strlen(req));
+            break;
+        } else {
+            continue;
+        }
+
+        write(sock, req, strlen(req));
+        memset(buffer, 0, MAX);
+        read(sock, buffer, MAX);
+
+        if (strcmp(buffer, "DISCONNECT") == 0) {
+            break;
+        }
+
+        printf("\nServer Response:\n%s\n", buffer);
+    }
+
+    close(sock);
+    return 0;
+}
