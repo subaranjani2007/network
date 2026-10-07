@@ -1,0 +1,126 @@
+SERVER.C
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+struct Student {
+    char reg_num[20];
+    char name[50];
+    char dept[20];
+    char sem[5];
+    char cgpa[5];
+};
+
+struct Student db[] = {
+    {"101", "Alice Smith", "CSE", "5th", "9.2"},
+    {"102", "Bob Jones", "ECE", "3rd", "8.5"},
+    {"103", "Charlie Brown", "MECH", "7th", "7.9"}
+};
+int db_size = 3;
+
+int main() {
+    int sockfd;
+    char buffer[1024];
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(8080);
+
+    if (bind(sockfd, (const struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(sockfd);
+        exit(1);
+    }
+
+    printf("UDP Server is running on port 8080...\n");
+
+    while (1) {
+        int n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&client_addr, &addr_len);
+        if (n < 0) continue;
+        buffer[n] = '\0';
+
+        buffer[strcspn(buffer, "\r\n")] = '\0';
+
+        char response[1024] = "Error: Student registration number not found.";
+        for (int i = 0; i < db_size; i++) {
+            if (strcmp(db[i].reg_num, buffer) == 0) {
+                snprintf(response, sizeof(response), 
+                         "\nName: %s\nDepartment: %s\nSemester: %s\nCGPA: %s", 
+                         db[i].name, db[i].dept, db[i].sem, db[i].cgpa);
+                break;
+            }
+        }
+
+        sendto(sockfd, response, strlen(response), 0, (const struct sockaddr *)&client_addr, addr_len);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+
+CLIENT.C
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main() {
+    int sockfd;
+    char buffer[1024];
+    char reg_num[100];
+    struct sockaddr_in server_addr;
+    socklen_t addr_len = sizeof(server_addr);
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(8080);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    while (1) {
+        printf("\nEnter student registration number (or type 'exit' to quit): ");
+        if (!fgets(reg_num, sizeof(reg_num), stdin)) break;
+
+        reg_num[strcspn(reg_num, "\r\n")] = '\0';
+
+        if (strcmp(reg_num, "exit") == 0) {
+            break;
+        }
+
+        if (strlen(reg_num) == 0) {
+            printf("Invalid input. Please enter a valid registration number.\n");
+            continue;
+        }
+
+        sendto(sockfd, reg_num, strlen(reg_num), 0, (const struct sockaddr *)&server_addr, addr_len);
+
+        int n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&server_addr, &addr_len);
+        if (n >= 0) {
+            buffer[n] = '\0';
+            printf("Server Response: %s\n", buffer);
+        }
+    }
+
+    close(sockfd);
+    return 0;
+}
