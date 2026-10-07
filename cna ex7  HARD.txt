@@ -1,0 +1,252 @@
+server.c 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+#define DB_FILE "library.txt"
+#define LOG_FILE "server.log"
+
+typedef struct {
+    int seq_num;
+    char type; 
+    char data[BUFFER_SIZE];
+} Packet;
+
+void log_activity(const char *msg) {
+    FILE *f = fopen(LOG_FILE, "a");
+    if (!f) return;
+    time_t now = time(NULL);
+    char *dt = ctime(&now);
+    dt[strlen(dt) - 1] = '\0';
+    fprintf(f, "[%s] %s\n", dt, msg);
+    fclose(f);
+}
+
+void init_db() {
+    FILE *f = fopen(DB_FILE, "r");
+    if (!f) {
+        f = fopen(DB_FILE, "w");
+        fprintf(f, "C_Programming 5\nData_Structures 3\nNetworking 2\n");
+        fclose(f);
+    } else {
+        fclose(f);
+    }
+}
+
+void process_request(Packet req, Packet *res) {
+    res->seq_num = req.seq_num;
+    res->type = 'A';
+    
+    char book[256];
+    int count;
+    
+    if (req.type == 'L') {
+        FILE *f = fopen(DB_FILE, "r");
+        char line[256];
+        res->data[0] = '\0';
+        while (fgets(line, sizeof(line), f)) {
+            strcat(res->data, line);
+        }
+        fclose(f);
+        log_activity("Listed available books.");
+        return;
+    }
+    
+    sscanf(req.data, "%s", book);
+    FILE *f = fopen(DB_FILE, "r");
+    FILE *temp = fopen("temp.txt", "w");
+    int found = 0;
+    char log_msg[512];
+
+    while (fscanf(f, "%s %d", book_name, &count) != EOF) {
+        char book_name[256];
+        if (strcmp(book_name, book) == 0) {
+            found = 1;
+            if (req.type == 'S') {
+                sprintf(res->data, "Book %s available count: %d\n", book, count);
+                fprintf(temp, "%s %d\n", book_name, count);
+            } else if (req.type == 'I') {
+                if (count > 0) {
+                    count--;
+                    sprintf(res->data, "Book %s successfully issued.\n", book);
+                    sprintf(log_msg, "Issued book: %s", book);
+                    log_activity(log_msg);
+                } else {
+                    sprintf(res->data, "Book %s is out of stock.\n", book);
+                }
+                fprintf(temp, "%s %d\n", book_name, count);
+            } else if (req.type == 'R') {
+                count++;
+                sprintf(res->data, "Book %s successfully returned.\n", book);
+                sprintf(log_msg, "Returned book: %s", book);
+                log_activity(log_msg);
+                fprintf(temp, "%s %d\n", book_name, count);
+            }
+        } else {
+            fprintf(temp, "%s %d\n", book_name, count);
+        }
+    }
+    fclose(f);
+    fclose(temp);
+    rename("temp.txt", DB_FILE);
+
+    if (!found) {
+        if (req.type == 'R') {
+            FILE *f_add = fopen(DB_FILE, "a");
+            fprintf(f_add, "%s 1\n", book);
+            fclose(f_add);
+            sprintf(res->data, "New Book %s added and returned.\n", book);
+            sprintf(log_msg, "Returned new book: %s", book);
+            log_activity(log_msg);
+        } else {
+            sprintf(res->data, "Book %s not found in library.\n", book);
+        }
+    }
+}
+
+int main() {
+    int sockfd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    Packet req_pkt, res_pkt;
+    int last_processed_seq = -1;
+    Packet last_res_pkt;
+
+    init_db();
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    printf("Library Server running on port %d...\n", PORT);
+
+    while (1) {
+        recvfrom(sockfd, &req_pkt, sizeof(req_pkt), 0, (struct sockaddr*)&client_addr, &addr_len);
+        
+        if (req_pkt.seq_num == last_processed_seq) {
+            sendto(sockfd, &last_res_pkt, sizeof(last_res_pkt), 0, (struct sockaddr*)&client_addr, addr_len);
+            continue;
+        }
+
+        process_request(req_pkt, &res_pkt);
+        last_processed_seq = req_pkt.seq_num;
+        last_res_pkt = res_pkt;
+
+        sendto(sockfd, &res_pkt, sizeof(res_pkt), 0, (struct sockaddr*)&client_addr, addr_len);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+
+client.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+#define TIMEOUT_SEC 2
+
+typedef struct {
+    int seq_num;
+    char type; 
+    char data[BUFFER_SIZE];
+} Packet;
+
+int main() {
+    int sockfd;
+    struct sockaddr_in server_addr;
+    socklen_t addr_len = sizeof(server_addr);
+    Packet req_pkt, res_pkt;
+    int choice, global_seq = 0;
+    struct timeval tv;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    tv.tv_sec = TIMEOUT_SEC;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    while (1) {
+        printf("\n--- Library System Menu ---\n");
+        printf("1. List All Available Books\n");
+        printf("2. Search for a Book\n");
+        printf("3. Issue a Book\n");
+        printf("4. Return a Book\n");
+        printf("5. Exit\n");
+        printf("Enter Choice: ");
+        scanf("%d", &choice);
+
+        if (choice == 5) break;
+
+        req_pkt.seq_num = global_seq++;
+        memset(req_pkt.data, 0, BUFFER_SIZE);
+
+        switch (choice) {
+            case 1:
+                req_pkt.type = 'L';
+                break;
+            case 2:
+                req_pkt.type = 'S';
+                printf("Enter Book Name: ");
+                scanf("%s", req_pkt.data);
+                break;
+            case 3:
+                req_pkt.type = 'I';
+                printf("Enter Book Name to Issue: ");
+                scanf("%s", req_pkt.data);
+                break;
+            case 4:
+                req_pkt.type = 'R';
+                printf("Enter Book Name to Return: ");
+                scanf("%s", req_pkt.data);
+                break;
+            default:
+                printf("Invalid Choice.\n");
+                continue;
+        }
+
+        int attempts = 0;
+        int received = 0;
+
+        while (attempts < 3) {
+            sendto(sockfd, &req_pkt, sizeof(req_pkt), 0, (struct sockaddr*)&server_addr, addr_len);
+            
+            int n = recvfrom(sockfd, &res_pkt, sizeof(res_pkt), 0, (struct sockaddr*)&server_addr, &addr_len);
+            if (n >= 0 && res_pkt.seq_num == req_pkt.seq_num) {
+                received = 1;
+                break;
+            }
+            attempts++;
+            printf("Timeout! Retransmitting packet (Attempt %d/3)...\n", attempts);
+        }
+
+        if (received) {
+            printf("\n--- Server Response ---\n%s", res_pkt.data);
+        } else {
+            printf("\nError: Server is unreachable after multiple attempts.\n");
+        }
+    }
+
+    close(sockfd);
+    return 0;
+}
