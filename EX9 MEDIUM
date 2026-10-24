@@ -1,0 +1,254 @@
+
+SERVER.C
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <dirent.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+#define STORAGE_DIR "./storage"
+
+void *handle_client(void *client_socket_ptr) {
+    int client_socket = *(int *)client_socket_ptr;
+    free(client_socket_ptr);
+
+    char buffer[BUFFER_SIZE];
+
+    printf("[SERVER] Client connected on socket %d\n", client_socket);
+
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+
+        if (bytes_received <= 0) {
+            printf("[SERVER] Client disconnected or error occurred on socket %d\n", client_socket);
+            break;
+        }
+
+        buffer[strcspn(buffer, "\n")] = 0;
+
+        if (strcmp(buffer, "LIST") == 0) {
+            DIR *d = opendir(STORAGE_DIR);
+            struct dirent *dir;
+            char list_buffer[BUFFER_SIZE * 4] = "";
+
+            if (d) {
+                while ((dir = readdir(d)) != NULL) {
+                    if (dir->d_type == DT_REG) {
+                        strcat(list_buffer, dir->d_name);
+                        strcat(list_buffer, "\n");
+                    }
+                }
+                closedir(d);
+            } else {
+                strcpy(list_buffer, "Error reading storage directory.\n");
+            }
+
+            if (strlen(list_buffer) == 0) {
+                strcpy(list_buffer, "(No files available)\n");
+            }
+
+            send(client_socket, list_buffer, strlen(list_buffer), 0);
+        }
+        else if (strncmp(buffer, "DOWNLOAD ", 9) == 0) {
+            char *filename = buffer + 9;
+            char filepath[BUFFER_SIZE];
+            snprintf(filepath, sizeof(filepath), "%s/%s", STORAGE_DIR, filename);
+
+            FILE *file = fopen(filepath, "rb");
+            if (file == NULL) {
+                char *err_msg = "ERROR: File not found\n";
+                send(client_socket, err_msg, strlen(err_msg), 0);
+                continue;
+            }
+
+            send(client_socket, "START", 5, 0);
+            usleep(10000);
+
+            int bytes_read;
+            while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+                send(client_socket, buffer, bytes_read, 0);
+            }
+
+            fclose(file);
+            printf("[SERVER] Successfully sent '%s' to client.\n", filename);
+
+            usleep(50000);
+            send(client_socket, "EOF_SIGNAL", 10, 0);
+        }
+        else if (strcmp(buffer, "EXIT") == 0) {
+            printf("[SERVER] Exit command received from socket %d\n", client_socket);
+            break;
+        } else {
+            char *err_msg = "UNKNOWN COMMAND\n";
+            send(client_socket, err_msg, strlen(err_msg), 0);
+        }
+    }
+
+    close(client_socket);
+    pthread_exit(NULL);
+}
+
+int main() {
+    int server_fd, *new_sock;
+    struct sockaddr_in address;
+    int opt = 1;
+    socklen_t addrlen = sizeof(address);
+
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("Socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 10) < 0) {
+        perror("Listen failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[SERVER] TCP File Server started on port %d. Waiting for connections...\n", PORT);
+
+    while (1) {
+        new_sock = malloc(sizeof(int));
+        if ((*new_sock = accept(server_fd, (struct sockaddr *)&address, &addrlen)) < 0) {
+            perror("Accept failed");
+            free(new_sock);
+            continue;
+        }
+
+        pthread_t thread_id;
+        if (pthread_create(&thread_id, NULL, handle_client, (void *)new_sock) < 0) {
+            perror("Could not create thread");
+            free(new_sock);
+            continue;
+        }
+
+        pthread_detach(thread_id);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+CLIENT.C
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+int main() {
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    char buffer[BUFFER_SIZE] = {0};
+    char command[BUFFER_SIZE];
+
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        printf("\n Socket creation error \n");
+        return -1;
+    }
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+        printf("\nInvalid address/ Address not supported \n");
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        printf("\nConnection Failed \n");
+        return -1;
+    }
+
+    printf("Connected to File Sharing Server.\n");
+    printf("Commands Available: LIST, DOWNLOAD <filename>, EXIT\n");
+
+    while (1) {
+        printf("\nclient> ");
+        fgets(command, BUFFER_SIZE, stdin);
+        command[strcspn(command, "\n")] = 0;
+
+        if (strlen(command) == 0) continue;
+
+        send(sock, command, strlen(command), 0);
+
+        if (strcmp(command, "EXIT") == 0) {
+            break;
+        }
+        else if (strncmp(command, "DOWNLOAD ", 9) == 0) {
+            char *filename = command + 9;
+            memset(buffer, 0, BUFFER_SIZE);
+            
+            int bytes_received = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+            buffer[bytes_received] = '\0';
+
+            if (strncmp(buffer, "ERROR", 5) == 0) {
+                printf("%s", buffer);
+            }
+            else if (strncmp(buffer, "START", 5) == 0) {
+                char downloaded_filename[BUFFER_SIZE + 10];
+                snprintf(downloaded_filename, sizeof(downloaded_filename), "downloaded_%s", filename);
+                
+                FILE *file = fopen(downloaded_filename, "wb");
+                if (file == NULL) {
+                    perror("Failed to create local file");
+                    continue;
+                }
+
+                printf("Downloading '%s'...\n", filename);
+                
+                while (1) {
+                    memset(buffer, 0, BUFFER_SIZE);
+                    bytes_received = recv(sock, buffer, BUFFER_SIZE, 0);
+                    
+                    if (bytes_received <= 0) break;
+                    
+                    if (strstr(buffer, "EOF_SIGNAL") != NULL) {
+                        char *eof_pos = strstr(buffer, "EOF_SIGNAL");
+                        fwrite(buffer, 1, eof_pos - buffer, file);
+                        break;
+                    }
+                    
+                    fwrite(buffer, 1, bytes_received, file);
+                }
+                
+                fclose(file);
+                printf("Download completed successfully saved as '%s'.\n", downloaded_filename);
+            }
+        }
+        else {
+            memset(buffer, 0, BUFFER_SIZE);
+            int bytes_received = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+            buffer[bytes_received] = '\0';
+            printf("\n--- Server Response ---\n%s", buffer);
+        }
+    }
+
+    close(sock);
+    return 0;
+}
+
+
