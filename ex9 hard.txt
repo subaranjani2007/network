@@ -1,0 +1,394 @@
+server.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+#define MAX_QUESTIONS 3
+#define MAX_USERS 3
+
+typedef struct {
+    char username[50];
+    char password[50];
+} User;
+
+typedef struct {
+    int id;
+    char question[256];
+    char options[4][50];
+    char correct_option;
+} Question;
+
+User user_db[MAX_USERS] = {
+    {"student1", "pass123"},
+    {"student2", "secure456"},
+    {"student3", "exam2026"}
+};
+
+Question question_db[MAX_QUESTIONS] = {
+    {1, "What is the size of an int data type in C on a standard 32-bit architecture?", {"A. 1 Byte", "B. 2 Bytes", "C. 4 Bytes", "D. 8 Bytes"}, 'C'},
+    {2, "Which protocol works at the Transport Layer of the OSI Model?", {"A. IP", "B. TCP", "C. HTTP", "D. FTP"}, 'B'},
+    {3, "Which of the following functions allows dynamic memory allocation in C?", {"A. malloc()", "B. free()", "C. sizeof()", "D. main()"}, 'A'}
+};
+
+pthread_mutex_t db_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void log_activity(const char *username, const char *action) {
+    time_t now;
+    time(&now);
+    char *time_str = ctime(&now);
+    time_str[strlen(time_str) - 1] = '\0';
+
+    FILE *log_file = fopen("server_log.txt", "a");
+    if (log_file != NULL) {
+        fprintf(log_file, "[%s] User: %s | Action: %s\n", time_str, username, action);
+        fclose(log_file);
+    }
+    printf("[%s] User: %s | Action: %s\n", time_str, username, action);
+}
+
+void *client_handler(void *socket_desc) {
+    int client_sock = *(int *)socket_desc;
+    free(socket_desc);
+        
+    char buffer[BUFFER_SIZE];
+    char client_user[50] = "Anonymous";
+    int authenticated = 0;
+    int read_size;
+
+    log_activity(client_user, "Connected to the server.");
+
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        read_size = recv(client_sock, buffer, BUFFER_SIZE, 0);
+                
+        if (read_size <= 0) {
+            log_activity(client_user, "Client disconnected or connection lost.");
+            break;
+        }
+
+        buffer[strcspn(buffer, "\r\n")] = 0;
+
+        if (strncmp(buffer, "AUTH", 4) == 0) {
+            char user[50], pass[50];
+            if (sscanf(buffer + 5, "%s %s", user, pass) == 2) {
+                int found = 0;
+                for (int i = 0; i < MAX_USERS; i++) {
+                    if (strcmp(user, user_db[i].username) == 0 && strcmp(pass, user_db[i].password) == 0) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (found) {
+                    authenticated = 1;
+                    strcpy(client_user, user);
+                    send(client_sock, "AUTH_SUCCESS\n", 13, 0);
+                    log_activity(client_user, "Authenticated successfully.");
+                } else {
+                    send(client_sock, "AUTH_FAIL\n", 10, 0);
+                    log_activity(user, "Failed authentication attempt.");
+                }
+            } else {
+                send(client_sock, "INVALID_FORMAT\n", 15, 0);
+            }
+        }
+
+        else if (strcmp(buffer, "GET_EXAM") == 0) {
+            if (!authenticated) {
+                send(client_sock, "UNAUTHORIZED\n", 13, 0);
+                continue;
+            }
+
+            pthread_mutex_lock(&db_mutex);
+
+            char exam_data[BUFFER_SIZE * 2] = "";
+            for (int i = 0; i < MAX_QUESTIONS; i++) {
+                char q_block[512];
+                sprintf(q_block, "Q%d: %s\n%s\n%s\n%s\n%s\n", 
+                        question_db[i].id, question_db[i].question,
+                        question_db[i].options[0], question_db[i].options[1],
+                        question_db[i].options[2], question_db[i].options[3]);
+                strcat(exam_data, q_block);
+            }
+            pthread_mutex_unlock(&db_mutex);
+
+            send(client_sock, exam_data, strlen(exam_data), 0);
+            log_activity(client_user, "Retrieved exam questions.");
+        }
+
+        else if (strncmp(buffer, "SUBMIT", 6) == 0) {
+            if (!authenticated) {
+                send(client_sock, "UNAUTHORIZED\n", 13, 0);
+                continue;
+            }
+
+            char ans1, ans2, ans3;
+            if (sscanf(buffer + 7, "%c %c %c", &ans1, &ans2, &ans3) == 3) {
+                int score = 0;
+                pthread_mutex_lock(&db_mutex);
+                if (ans1 == question_db[0].correct_option) score++;
+                if (ans2 == question_db[1].correct_option) score++;
+                if (ans3 == question_db[2].correct_option) score++;
+                pthread_mutex_unlock(&db_mutex);
+
+                char res_msg[64];
+                sprintf(res_msg, "SCORE: %d/%d\n", score, MAX_QUESTIONS);
+                send(client_sock, res_msg, strlen(res_msg), 0);
+                                
+                char log_msg[64];
+                sprintf(log_msg, "Submitted answers. Score obtained: %d/%d", score, MAX_QUESTIONS);
+                log_activity(client_user, log_msg);
+            } else {
+                send(client_sock, "INVALID_SUBMISSION_FORMAT\n", 26, 0);
+            }
+        }
+
+        else if (strcmp(buffer, "EXIT") == 0) {
+            send(client_sock, "GOODBYE\n", 8, 0);
+            log_activity(client_user, "Closed session gracefully.");
+            break;
+        }
+
+        else {
+            send(client_sock, "BAD_REQUEST\n", 12, 0);
+            log_activity(client_user, "Sent an unparseable/invalid request.");
+        }
+    }
+
+    close(client_sock);
+    return NULL;
+}
+
+int main() {
+    int server_fd, *new_sock;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_size = sizeof(struct sockaddr_in);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind statement mismatch failure");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 10) < 0) {
+        perror("Listen state failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[SERVER INITIATED] Listening actively on Port %d...\n", PORT);
+
+    while (1) {
+        int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_size);
+        if (client_fd < 0) {
+            perror("Accept loop drop error");
+            continue;
+        }
+
+        pthread_t client_thread;
+        new_sock = malloc(sizeof(int));
+        *new_sock = client_fd;
+
+        if (pthread_create(&client_thread, NULL, client_handler, (void *)new_sock) < 0) {
+            perror("Could not create thread stack execution context");
+            free(new_sock);
+            continue;
+        }
+                
+        pthread_detach(client_thread);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+
+client.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 2048
+
+int main() {
+    int sock_fd;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    char username[50], password[50];
+
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        perror("Socket execution configuration failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    if (connect(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection down context failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("--- Connected to the Examination Management System Server ---\n");
+
+    while (1) {
+        printf("\nEnter Username: ");
+        scanf("%s", username);
+        printf("Enter Password: ");
+        scanf("%s", password);
+
+        sprintf(buffer, "AUTH %s %s", username, password);
+        send(sock_fd, buffer, strlen(buffer), 0);
+
+        memset(buffer, 0, BUFFER_SIZE);
+        recv(sock_fd, buffer, BUFFER_SIZE, 0);
+
+        if (strncmp(buffer, "AUTH_SUCCESS", 12) == 0) {
+            printf("[✓] Access granted. Welcome, %s!\n", username);
+            break;
+        } else {
+            printf("[✗] Access denied. Invalid credentials. Try again.\n");
+        }
+    }
+
+    int choice;
+    char ans1, ans2, ans3;
+    while (1) {
+        printf("\n--- Examination Menu ---\n");
+        printf("1. Fetch Exam Papers\n");
+        printf("2. Submit Answers & View Results\n");
+        printf("3. Disconnect Session\n");
+        printf("Choose option: ");
+        scanf("%d", &choice);
+
+        if (choice == 1) {
+            strcpy(buffer, "GET_EXAM");
+            send(sock_fd, buffer, strlen(buffer), 0);
+
+            memset(buffer, 0, BUFFER_SIZE);
+            recv(sock_fd, buffer, BUFFER_SIZE, 0);
+            printf("\n--- QUESTION SHEET ---\n%s", buffer);
+        }
+
+        else if (choice == 2) {
+            printf("\nEnter Choice Code for Q1, Q2, and Q3 (separated by space, e.g., 'C B A'): ");
+            scanf(" %c %c %c", &ans1, &ans2, &ans3);
+
+            sprintf(buffer, "SUBMIT %c %c %c", ans1, ans2, ans3);
+            send(sock_fd, buffer, strlen(buffer), 0);
+
+            memset(buffer, 0, BUFFER_SIZE);
+            recv(sock_fd, buffer, BUFFER_SIZE, 0);
+            printf("\n[RESULT Evaluation Summary]: %s", buffer);
+        }
+
+        else if (choice == 3) {
+            strcpy(buffer, "EXIT");
+            send(sock_fd, buffer, strlen(buffer), 0);
+            printf("Disconnecting session safely.\n");
+            break;
+        }
+
+        else {
+            printf("Invalid system command selection.\n");
+        }
+    }
+
+    close(sock_fd);
+    return 0;
+}
+
+
+
+output:
+gcc server.c -o server 
+gcc client.c -o client
+
+server:
+
+[SERVER INITIATED] Listening actively on Port 8080...
+[Mon Oct 26 11:20:05 2026] User: Anonymous | Action: Connected to the server.
+[Mon Oct 26 11:20:12 2026] User: guest | Action: Failed authentication attempt.
+[Mon Oct 26 11:20:25 2026] User: student1 | Action: Authenticated successfully.
+[Mon Oct 26 11:20:30 2026] User: student1 | Action: Retrieved exam questions.
+[Mon Oct 26 11:20:48 2026] User: student1 | Action: Submitted answers. Score obtained: 3/3
+[Mon Oct 26 11:21:02 2026] User: student1 | Action: Closed session gracefully.
+
+client:
+--- Connected to the Examination Management System Server ---
+
+Enter Username: guest
+Enter Password: bad
+[✗] Access denied. Invalid credentials. Try again.
+
+Enter Username: student1
+Enter Password: pass123
+[✓] Access granted. Welcome, student1!
+
+--- Examination Menu ---
+1. Fetch Exam Papers
+2. Submit Answers & View Results
+3. Disconnect Session
+Choose option: 1
+
+--- QUESTION SHEET ---
+Q1: What is the size of an int data type in C on a standard 32-bit architecture?
+A. 1 Byte
+B. 2 Bytes
+C. 4 Bytes
+D. 8 Bytes
+Q2: Which protocol works at the Transport Layer of the OSI Model?
+A. IP
+B. TCP
+C. HTTP
+D. FTP
+Q3: Which of the following functions allows dynamic memory allocation in C?
+A. malloc()
+B. free()
+C. sizeof()
+D. main()
+
+--- Examination Menu ---
+1. Fetch Exam Papers
+2. Submit Answers & View Results
+3. Disconnect Session
+Choose option: 2
+
+Enter Choice Code for Q1, Q2, and Q3 (separated by space, e.g., 'C B A'): C B A
+
+[RESULT Evaluation Summary]: SCORE: 3/3
+
+--- Examination Menu ---
+1. Fetch Exam Papers
+2. Submit Answers & View Results
+3. Disconnect Session
+Choose option: 3
+Disconnecting session safely.
