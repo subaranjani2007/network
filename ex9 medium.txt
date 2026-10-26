@@ -1,0 +1,139 @@
+server.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <dirent.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+void *handle_client(void *socket_desc) {
+    int client_sock = *(int *)socket_desc;
+    free(socket_desc);
+    char buffer[BUFFER_SIZE];
+
+    DIR *dir = opendir(".");
+    if (dir != NULL) {
+        struct dirent *entry;
+        strcpy(buffer, "--- AVAILABLE FILES ---\n");
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_type == DT_REG) {
+                strcat(buffer, entry->d_name);
+                strcat(buffer, "\n");
+            }
+        }
+        strcat(buffer, "-----------------------\n");
+        closedir(dir);
+        send(client_sock, buffer, strlen(buffer), 0);
+    }
+
+    memset(buffer, 0, BUFFER_SIZE);
+    if (recv(client_sock, buffer, BUFFER_SIZE - 1, 0) > 0) {
+        buffer[strcspn(buffer, "\r\n")] = 0;
+        FILE *fp = fopen(buffer, "rb");
+        if (fp) {
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+                send(client_sock, buffer, bytes, 0);
+            }
+            fclose(fp);
+        }
+    }
+
+    close(client_sock);
+    pthread_exit(NULL);
+}
+
+int main() {
+    int server_fd, client_sock, *new_sock;
+    struct sockaddr_in server_addr;
+    socklen_t addr_size = sizeof(server_addr);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    listen(server_fd, 10);
+
+    printf("[*] File Sharing Server is listening on port %d...\n", PORT);
+
+    while (1) {
+        client_sock = accept(server_fd, (struct sockaddr *)&server_addr, &addr_size);
+        new_sock = malloc(sizeof(int));
+        *new_sock = client_sock;
+        pthread_t thread_id;
+        pthread_create(&thread_id, NULL, handle_client, (void *)new_sock);
+        pthread_detach(thread_id);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+client.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+int main() {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in server_addr = {0};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
+
+    char buffer[BUFFER_SIZE];
+    int bytes = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes > 0)
+        printf("%s", buffer);
+
+    char filename[BUFFER_SIZE];
+    printf("Enter the name of the file to download: ");
+    fgets(filename, BUFFER_SIZE, stdin);
+    filename[strcspn(filename, "\r\n")] = 0;
+
+    send(sock, filename, strlen(filename), 0);
+
+    FILE *fp = fopen("downloaded_file.txt", "wb");
+    while ((bytes = recv(sock, buffer, BUFFER_SIZE, 0)) > 0) {
+        fwrite(buffer, 1, bytes, fp);
+    }
+    fclose(fp);
+
+    printf("[+] File download complete. Saved as 'downloaded_file.txt'.\n");
+    close(sock);
+    return 0;
+}
+
+
+output:
+gcc server.c  -o server
+gcc client.c -o client
+
+
+--- AVAILABLE FILES ---
+server.c
+client.c
+test.txt
+-----------------------
+Enter the name of the file to download: test.txt
+File download complete. Saved as 'downloaded_file.txt'.
+
